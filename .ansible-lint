@@ -3,6 +3,5 @@
 skip_list:
   - command-instead-of-module  # systemctl is-active : verifications en lecture seule
   - package-latest             # mise a jour controlee d'un paquet : la derniere version est voulue
-  - fqcn[canonical]            # ansible.builtin.mount est disponible dans ansible-core 2.20
   - run-once[task]             # plays lineaires ; le MSI n'est telecharge qu'une fois
   - no-handler                 # journal de maintenance ecrit seulement si des paquets ont change

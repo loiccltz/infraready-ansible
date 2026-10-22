@@ -141,10 +141,9 @@ Les versions sont figées : `requirements-ci.txt` (ansible-core 2.20.1, ansible-
 
 Pour reproduire localement, depuis `~/infraready-ansible` : `yamllint .`, puis `ansible-lint`, puis `ansible-playbook -i inventory.ini <playbook> --syntax-check` pour chaque playbook.
 
-Règles de lint ignorées, avec leur justification :
+Règles de lint ignorées, avec leur justification (le module `mount` vient de la collection `ansible.posix`, épinglée dans `requirements.yml`) :
 - `command-instead-of-module` : `systemctl is-active` sert à vérifier l'état, en lecture seule.
 - `package-latest` : la mise à jour contrôlée de `tmux` demande explicitement la dernière version.
-- `fqcn[canonical]` : `ansible.builtin.mount` est disponible dans ansible-core 2.20.
 - `run-once[task]` : les plays sont linéaires, et le MSI n'est téléchargé qu'une fois.
 - `no-handler` : le journal de maintenance n'est écrit que si des paquets ont changé.
 

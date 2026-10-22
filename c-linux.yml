@@ -65,7 +65,7 @@
       when: type_fs.stdout == ""
 
     - name: Monter le disque de test et l'ajouter a fstab
-      ansible.builtin.mount:
+      ansible.posix.mount:
         path: "{{ point_montage }}"
         src: "{{ image_disque }}"
         fstype: ext4
