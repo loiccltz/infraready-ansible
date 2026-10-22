@@ -1,0 +1,95 @@
+---
+# Blocs B et D Windows : groupes, comptes de test, appartenance, journaux consultes.
+# Aucun mot de passe dans ce fichier : WIN_ADMIN_PASSWORD (connexion) et TEST_USER_PASSWORD (comptes de test)
+# sont saisis dans le terminal avant le lancement.
+# Lancement : ansible-playbook -i inventory.ini windows.yml
+- name: Administration Windows - AD DS
+  hosts: windows
+  vars:
+    domaine: infraready.test
+    base_dn: "DC=infraready,DC=test"
+    ou_projet_nom: InfraReady
+    ou_projet_dn: "OU=InfraReady,DC=infraready,DC=test"
+    groupes:
+      - nom: GRP_Helpdesk
+        description: "Support niveau 1 : assistance des utilisateurs"
+      - nom: GRP_Comptables
+        description: "Comptabilite : acces aux documents comptables"
+    comptes_test:
+      - nom: test.helpdesk
+        groupe: GRP_Helpdesk
+      - nom: test.compta
+        groupe: GRP_Comptables
+
+  pre_tasks:
+    - name: Verifier que le mot de passe des comptes de test est fourni
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'TEST_USER_PASSWORD') | length > 0
+        fail_msg: "TEST_USER_PASSWORD n'est pas defini dans le terminal"
+      run_once: true
+
+  tasks:
+    - name: Creer l'unite organisationnelle du projet
+      microsoft.ad.ou:
+        name: "{{ ou_projet_nom }}"
+        path: "{{ base_dn }}"
+        state: present
+
+    - name: Creer les groupes de securite
+      microsoft.ad.group:
+        name: "{{ item.nom }}"
+        description: "{{ item.description }}"
+        scope: global
+        category: security
+        path: "{{ ou_projet_dn }}"
+        state: present
+      loop: "{{ groupes }}"
+
+    - name: Creer les comptes de test
+      microsoft.ad.user:
+        name: "{{ item.nom }}"
+        upn: "{{ item.nom }}@{{ domaine }}"
+        password: "{{ lookup('env', 'TEST_USER_PASSWORD') }}"
+        password_never_expires: true
+        update_password: on_create
+        path: "{{ ou_projet_dn }}"
+        enabled: true
+        state: present
+      loop: "{{ comptes_test }}"
+      no_log: true
+
+    - name: Ajouter chaque compte de test a son groupe
+      microsoft.ad.group:
+        name: "{{ item.groupe }}"
+        scope: global
+        category: security
+        path: "{{ ou_projet_dn }}"
+        members:
+          add:
+            - "{{ item.nom }}"
+        state: present
+      loop: "{{ comptes_test }}"
+
+    - name: Verifier l'appartenance de chaque compte a son groupe (lecture seule)
+      ansible.windows.win_shell: "if (Get-ADGroupMember -Identity '{{ item.groupe }}' | Where-Object SamAccountName -eq '{{ item.nom }}') { 'OK' } else { 'KO' }"
+      loop: "{{ comptes_test }}"
+      register: appartenance
+      changed_when: false
+
+    - name: Relever les dernieres erreurs du journal Systeme (lecture seule)
+      ansible.windows.win_shell: |
+        Get-WinEvent -LogName System -MaxEvents 200 |
+          Where-Object { $_.LevelDisplayName -eq 'Error' } |
+          Select-Object -First 5 TimeCreated, Id, ProviderName |
+          Format-Table -AutoSize | Out-String -Width 200
+      register: journal_systeme
+      changed_when: false
+      failed_when: false
+
+    - name: Controle final du bloc Windows
+      ansible.builtin.assert:
+        that:
+          - appartenance.results | map(attribute='stdout') | map('trim') | unique | list == ['OK']
+        fail_msg: "Au moins un compte de test n'est pas dans son groupe"
+        success_msg: "Groupes, comptes de test et appartenance : controles reussis"

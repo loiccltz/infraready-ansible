@@ -1,0 +1,113 @@
+---
+# Bloc C : comptes, groupes, permissions, disque de test, mise a jour controlee, verifications.
+# Lancement : sudo ansible-playbook -i inventory.ini c-linux.yml  (mot de passe sudo saisi a l'invite)
+- name: Administration Linux - bloc C
+  hosts: linux
+  become: true
+  vars:
+    groupe_projet: devs
+    dossier_partage: /srv/projet
+    image_disque: /var/lib/disque-test.img
+    point_montage: /mnt/disque-test
+    paquet_maj: tmux
+
+  tasks:
+    # Comptes et groupes
+    - name: Creer le groupe du projet
+      ansible.builtin.group:
+        name: "{{ groupe_projet }}"
+        state: present
+
+    - name: Creer le compte de test membre du groupe
+      ansible.builtin.user:
+        name: testdev1
+        groups: "{{ groupe_projet }}"
+        append: true
+        create_home: true
+        state: present
+
+    - name: Creer le compte de test hors du groupe
+      ansible.builtin.user:
+        name: testext
+        create_home: true
+        state: present
+
+    # Permissions : dossier partage, groupe devs, setgid, droits 2770
+    - name: Creer le dossier partage
+      ansible.builtin.file:
+        path: "{{ dossier_partage }}"
+        state: directory
+        owner: root
+        group: "{{ groupe_projet }}"
+        mode: "2770"
+
+    # Disque de test : image loop, ext4, montage persistant
+    - name: Creer le point de montage
+      ansible.builtin.file:
+        path: "{{ point_montage }}"
+        state: directory
+        mode: "0755"
+
+    - name: Creer l'image du disque de test (512 Mo, une seule fois)
+      ansible.builtin.command: fallocate -l 512M {{ image_disque }}
+      args:
+        creates: "{{ image_disque }}"
+
+    - name: Verifier si l'image contient deja un systeme de fichiers
+      ansible.builtin.command: blkid -s TYPE -o value {{ image_disque }}
+      register: type_fs
+      changed_when: false
+      failed_when: false
+
+    - name: Formater l'image en ext4 (seulement si elle est vide)
+      ansible.builtin.command: mkfs.ext4 -q {{ image_disque }}
+      changed_when: true
+      when: type_fs.stdout == ""
+
+    - name: Monter le disque de test et l'ajouter a fstab
+      ansible.builtin.mount:
+        path: "{{ point_montage }}"
+        src: "{{ image_disque }}"
+        fstype: ext4
+        opts: loop,defaults
+        state: mounted
+
+    # Mise a jour controlee : un seul paquet, faible risque
+    - name: Mettre a jour uniquement le paquet {{ paquet_maj }}
+      ansible.builtin.apt:
+        name: "{{ paquet_maj }}"
+        state: latest
+        update_cache: true
+
+    # Verifications (lecture seule)
+    - name: Verifier que testdev1 peut ecrire dans le dossier partage
+      ansible.builtin.command: runuser -l testdev1 -c 'test -w {{ dossier_partage }}'
+      register: droit_dev
+      changed_when: false
+      failed_when: false
+
+    - name: Verifier que testext ne peut pas ecrire dans le dossier partage
+      ansible.builtin.command: runuser -l testext -c 'test -w {{ dossier_partage }}'
+      register: droit_ext
+      changed_when: false
+      failed_when: false
+
+    - name: Verifier que le disque de test est monte
+      ansible.builtin.command: findmnt -n {{ point_montage }}
+      register: montage
+      changed_when: false
+
+    - name: Verifier que nginx est toujours actif
+      ansible.builtin.command: systemctl is-active nginx
+      register: nginx_etat
+      changed_when: false
+
+    - name: Controle final du bloc C
+      ansible.builtin.assert:
+        that:
+          - droit_dev.rc == 0
+          - droit_ext.rc != 0
+          - montage.rc == 0
+          - nginx_etat.stdout == "active"
+        fail_msg: "Au moins un controle du bloc C a echoue"
+        success_msg: "Controles du bloc C reussis"

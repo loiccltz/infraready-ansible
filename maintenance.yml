@@ -1,0 +1,98 @@
+---
+# Bloc E : maintenance et mises a jour controlees sur ops01.
+# Lancement : sudo ansible-playbook -i inventory.ini maintenance.yml  (mot de passe sudo saisi a l'invite)
+# Mise a jour sans suppression de paquets (upgrade: safe). Aucun redemarrage automatique : le besoin est seulement signale.
+- name: Maintenance et mises a jour - bloc E
+  hosts: linux
+  become: true
+  vars:
+    services_surveilles:
+      - nginx
+      - prometheus
+      - prometheus-node-exporter
+      - grafana-server
+    journal_maintenance: /var/log/infraready-maintenance.log
+
+  tasks:
+    - name: Lister les paquets en attente avant la mise a jour
+      ansible.builtin.command: apt list --upgradable
+      register: avant
+      changed_when: false
+
+    # Index APT : le miroir peut etre instable, on retente
+    - name: Mettre a jour l'index APT
+      ansible.builtin.apt:
+        update_cache: true
+        update_cache_retries: 5
+        update_cache_retry_max_delay: 12
+        cache_valid_time: 3600
+
+    # Mise a jour sans suppression de paquets
+    - name: Appliquer les mises a jour sans suppression de paquets
+      ansible.builtin.apt:
+        upgrade: safe
+      register: mise_a_jour
+
+    - name: Lister les paquets encore en attente apres la mise a jour
+      ansible.builtin.command: apt list --upgradable
+      register: apres
+      changed_when: false
+
+    - name: Verifier si un redemarrage est requis (signalement seulement)
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: redemarrage
+
+    # Verifications apres mise a jour (lecture seule)
+    - name: Verifier l'etat des services surveilles
+      ansible.builtin.command: systemctl is-active {{ item }}
+      loop: "{{ services_surveilles }}"
+      register: etats
+      changed_when: false
+      failed_when: false
+
+    - name: Verifier que nginx repond en HTTP
+      ansible.builtin.uri:
+        url: http://localhost/
+        status_code: 200
+      register: http_nginx
+      failed_when: false
+
+    - name: Verifier que Prometheus est pret
+      ansible.builtin.uri:
+        url: http://localhost:9090/-/ready
+        status_code: 200
+      register: prom_pret
+      failed_when: false
+
+    - name: Verifier que Grafana repond
+      ansible.builtin.uri:
+        url: http://localhost:3000/api/health
+        status_code: 200
+      register: grafana_ok
+      failed_when: false
+
+    # Journal de maintenance : ecrit seulement si des paquets ont ete mis a jour (une relance ne change rien)
+    - name: Ecrire le journal de maintenance
+      ansible.builtin.copy:
+        dest: "{{ journal_maintenance }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          Maintenance du {{ ansible_date_time.iso8601 }} sur {{ inventory_hostname }}
+          Paquets en attente avant : {{ avant.stdout_lines | length - 1 }}
+          Paquets en attente apres : {{ apres.stdout_lines | length - 1 }}
+          Redemarrage requis : {{ 'oui' if redemarrage.stat.exists else 'non' }}
+          Etat des services ({{ services_surveilles | join(', ') }}) : {{ etats.results | map(attribute='stdout') | join(', ') }}
+      when: mise_a_jour.changed
+
+    - name: Controle final du bloc E
+      ansible.builtin.assert:
+        that:
+          - etats.results | selectattr('stdout', 'ne', 'active') | list | length == 0
+          - http_nginx.status | default(0) == 200
+          - prom_pret.status | default(0) == 200
+          - grafana_ok.status | default(0) == 200
+        fail_msg: "Au moins un controle du bloc E a echoue"
+        success_msg: "Controles du bloc E reussis"

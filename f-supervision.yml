@@ -1,0 +1,277 @@
+---
+# Bloc F : supervision Linux sur ops01 (Node Exporter, Prometheus, Grafana).
+# Lancement : sudo ansible-playbook -i inventory.ini f-supervision.yml  (mot de passe sudo saisi a l'invite)
+- name: Supervision Linux - bloc F
+  hosts: linux
+  become: true
+  vars:
+    grafana_cle_url: https://apt.grafana.com/gpg.key
+    grafana_cle_chemin: /etc/apt/keyrings/grafana.asc
+    dossier_dashboards: /var/lib/grafana/dashboards
+
+  tasks:
+    # Paquets : Node Exporter et Prometheus viennent des depots Ubuntu
+    - name: Installer Node Exporter et Prometheus (depots Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - prometheus-node-exporter
+          - prometheus
+        state: present
+        update_cache: true
+
+    # Grafana n'est pas dans les depots Ubuntu : on ajoute son depot officiel
+    - name: Creer le dossier des cles APT
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Telecharger la cle du depot officiel Grafana
+      ansible.builtin.get_url:
+        url: "{{ grafana_cle_url }}"
+        dest: "{{ grafana_cle_chemin }}"
+        mode: "0644"
+
+    - name: Ajouter le depot officiel Grafana
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by={{ grafana_cle_chemin }}] https://apt.grafana.com stable main"
+        filename: grafana
+        state: present
+
+    - name: Installer Grafana
+      ansible.builtin.apt:
+        name: grafana
+        state: present
+
+    # Prometheus : une cible par serveur (Node Exporter) et des regles de seuil
+    - name: Configurer Prometheus (cible Node Exporter et regles)
+      ansible.builtin.copy:
+        dest: /etc/prometheus/prometheus.yml
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+        content: |
+          global:
+            scrape_interval: 15s
+            evaluation_interval: 15s
+
+          rule_files:
+            - /etc/prometheus/rules/infraready.yml
+
+          scrape_configs:
+            - job_name: prometheus
+              static_configs:
+                - targets: ["localhost:9090"]
+            - job_name: node
+              static_configs:
+                - targets: ["localhost:9100"]
+            - job_name: windows
+              static_configs:
+                - targets: ["192.168.50.10:9182"]
+      notify: Redemarrer prometheus
+
+    - name: Creer le dossier des regles d'alerte
+      ansible.builtin.file:
+        path: /etc/prometheus/rules
+        state: directory
+        mode: "0755"
+
+    - name: Ecrire les regles d'alerte (seuils)
+      ansible.builtin.copy:
+        dest: /etc/prometheus/rules/infraready.yml
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          groups:
+            - name: infraready
+              rules:
+                - alert: ServeurInjoignable
+                  expr: 'up{job=~"node|windows"} == 0'
+                  for: 1m
+                  labels:
+                    severity: critical
+                  annotations:
+                    summary: "Node Exporter ne repond plus sur {{ inventory_hostname }}"
+                - alert: DisqueRacinePlein
+                  expr: '100 * (1 - node_filesystem_avail_bytes{job="node",mountpoint="/"} / node_filesystem_size_bytes{job="node",mountpoint="/"}) > 80'
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: "Le systeme de fichiers / depasse 80 % sur {{ inventory_hostname }}"
+      notify: Redemarrer prometheus
+
+    # Grafana : Prometheus comme source, et un tableau de bord provisionne
+    - name: Declarer Prometheus comme source de donnees Grafana
+      ansible.builtin.copy:
+        dest: /etc/grafana/provisioning/datasources/infraready.yaml
+        owner: root
+        group: grafana
+        mode: "0640"
+        content: |
+          apiVersion: 1
+          datasources:
+            - name: Prometheus
+              type: prometheus
+              access: proxy
+              url: http://localhost:9090
+              isDefault: true
+      notify: Redemarrer grafana
+
+    - name: Declarer le fournisseur de tableaux de bord
+      ansible.builtin.copy:
+        dest: /etc/grafana/provisioning/dashboards/infraready.yaml
+        owner: root
+        group: grafana
+        mode: "0640"
+        content: |
+          apiVersion: 1
+          providers:
+            - name: infraready
+              type: file
+              disableDeletion: true
+              options:
+                path: /var/lib/grafana/dashboards
+      notify: Redemarrer grafana
+
+    - name: Creer le dossier des tableaux de bord
+      ansible.builtin.file:
+        path: "{{ dossier_dashboards }}"
+        state: directory
+        owner: grafana
+        group: grafana
+        mode: "0755"
+
+    # yamllint disable rule:line-length
+    - name: Ecrire le tableau de bord Linux (cinq panneaux, seuil disque 80 %)
+      ansible.builtin.copy:
+        dest: "{{ dossier_dashboards }}/linux-ops01.json"
+        owner: grafana
+        group: grafana
+        mode: "0644"
+        content: |
+          {
+            "title": "InfraReady - Linux ops01",
+            "uid": "infraready-linux",
+            "schemaVersion": 39,
+            "version": 1,
+            "editable": true,
+            "time": {"from": "now-1h", "to": "now"},
+            "panels": [
+              {"id": 1, "type": "stat", "title": "Serveur joignable", "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0}, "targets": [{"refId": "A", "expr": "up{job=\"node\"}"}], "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}]}, "overrides": []}},
+              {"id": 2, "type": "timeseries", "title": "Charge moyenne (1 min)", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4}, "targets": [{"refId": "A", "expr": "node_load1{job=\"node\"}"}]},
+              {"id": 3, "type": "timeseries", "title": "Utilisation CPU (%)", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4}, "targets": [{"refId": "A", "expr": "100 - (avg(rate(node_cpu_seconds_total{job=\"node\",mode=\"idle\"}[5m])) * 100)"}], "fieldConfig": {"defaults": {"unit": "percent"}, "overrides": []}},
+              {"id": 4, "type": "gauge", "title": "Disque / utilise (seuil 80 %)", "gridPos": {"h": 8, "w": 6, "x": 0, "y": 12}, "targets": [{"refId": "A", "expr": "100 * (1 - node_filesystem_avail_bytes{job=\"node\",mountpoint=\"/\"} / node_filesystem_size_bytes{job=\"node\",mountpoint=\"/\"})"}], "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 80}]}}, "overrides": []}},
+              {"id": 5, "type": "gauge", "title": "Memoire utilisee (%)", "gridPos": {"h": 8, "w": 6, "x": 6, "y": 12}, "targets": [{"refId": "A", "expr": "100 * (1 - node_memory_MemAvailable_bytes{job=\"node\"} / node_memory_MemTotal_bytes{job=\"node\"})"}], "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}, "overrides": []}}
+            ]
+          }
+
+    # Appliquer maintenant les redemarrages demandes par les changements de configuration
+    - name: Appliquer les redemarrages en attente (handlers)
+      ansible.builtin.meta: flush_handlers
+
+    # yamllint enable rule:line-length
+    # Services : demarres et actives au boot
+    - name: Demarrer et activer Node Exporter
+      ansible.builtin.service:
+        name: prometheus-node-exporter
+        state: started
+        enabled: true
+
+    - name: Demarrer et activer Prometheus
+      ansible.builtin.service:
+        name: prometheus
+        state: started
+        enabled: true
+
+    - name: Demarrer et activer Grafana
+      ansible.builtin.service:
+        name: grafana-server
+        state: started
+        enabled: true
+
+    # Verifications (lecture seule), avec attente le temps que les services demarrent
+    - name: Verifier que Node Exporter repond
+      ansible.builtin.uri:
+        url: http://localhost:9100/metrics
+        return_content: true
+      register: r_node
+      failed_when: false
+      until: r_node.status | default(0) == 200
+      retries: 10
+      delay: 3
+
+    - name: Verifier que Prometheus est pret
+      ansible.builtin.uri:
+        url: http://localhost:9090/-/ready
+        return_content: true
+      register: r_prom_ready
+      failed_when: false
+      until: r_prom_ready.status | default(0) == 200
+      retries: 10
+      delay: 3
+
+    - name: Verifier que Prometheus collecte la cible node (up = 1)
+      ansible.builtin.uri:
+        url: "http://localhost:9090/api/v1/query?query=up%7Bjob%3D%22node%22%7D"
+        return_content: true
+      register: r_cible
+      failed_when: false
+      until: r_cible.status | default(0) == 200 and '"1"' in r_cible.content | default('')
+      retries: 10
+      delay: 3
+
+    - name: Verifier que les regles d'alerte sont chargees
+      ansible.builtin.uri:
+        url: http://localhost:9090/api/v1/rules
+        return_content: true
+      register: r_regles
+      failed_when: false
+      until: r_regles.status | default(0) == 200 and 'DisqueRacinePlein' in r_regles.content | default('')
+      retries: 10
+      delay: 3
+
+    - name: Verifier que Grafana repond
+      ansible.builtin.uri:
+        url: http://localhost:3000/api/health
+        return_content: true
+      register: r_grafana
+      failed_when: false
+      until: r_grafana.status | default(0) == 200
+      retries: 20
+      delay: 3
+
+    - name: Verifier que la cible Windows est joignable (up = 1)
+      ansible.builtin.uri:
+        url: "http://localhost:9090/api/v1/query?query=up%7Bjob%3D%22windows%22%7D"
+        return_content: true
+      register: r_cible_windows
+      failed_when: false
+      until: r_cible_windows.status | default(0) == 200 and '"1"' in r_cible_windows.content | default('')
+      retries: 10
+      delay: 3
+
+    - name: Controle final du bloc F
+      ansible.builtin.assert:
+        that:
+          - r_node.status | default(0) == 200 and 'node_load1' in r_node.content | default('')
+          - r_prom_ready.status | default(0) == 200
+          - r_cible.status | default(0) == 200 and '"1"' in r_cible.content | default('')
+          - r_regles.status | default(0) == 200 and 'DisqueRacinePlein' in r_regles.content | default('')
+          - r_grafana.status | default(0) == 200
+          - r_cible_windows.status | default(0) == 200 and '"1"' in r_cible_windows.content | default('')
+        fail_msg: "Au moins un controle du bloc F a echoue"
+        success_msg: "Controles du bloc F reussis"
+
+  handlers:
+    - name: Redemarrer prometheus
+      ansible.builtin.service:
+        name: prometheus
+        state: restarted
+
+    - name: Redemarrer grafana
+      ansible.builtin.service:
+        name: grafana-server
+        state: restarted

@@ -1,0 +1,100 @@
+---
+# Bloc F (partie Windows) : Windows Exporter sur WIN-DC01, port 9182, accessible seulement depuis le reseau du lab.
+# Le MSI est telecharge sur ops01 (le controleur), puis copie sur WIN-DC01.
+# Mot de passe admin : variable d'environnement WIN_ADMIN_PASSWORD (jamais dans ce fichier).
+# Lancement : ansible-playbook -i inventory.ini windows-exporter.yml
+- name: Windows Exporter sur WIN-DC01
+  hosts: windows
+  vars:
+    msi_url: "https://github.com/prometheus-community/windows_exporter/releases/download/v0.32.0/windows_exporter-0.32.0-amd64.msi"
+    dossier_cache: /home/ops01/cache-ansible
+    msi_local: /home/ops01/cache-ansible/windows_exporter-0.32.0-amd64.msi
+    msi_distant: 'C:\Temp\windows_exporter-0.32.0-amd64.msi'
+    # Collecteurs valides pour la version 0.32 (le collecteur 'cs' n'existe plus)
+    collecteurs: "cpu,logical_disk,memory,net,os,service,system"
+    port_exporter: 9182
+    reseau_lab: 192.168.50.0/24
+
+  tasks:
+    - name: Creer le dossier de cache sur ops01
+      ansible.builtin.file:
+        path: "{{ dossier_cache }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Telecharger le MSI sur ops01 (pas sur le serveur)
+      ansible.builtin.get_url:
+        url: "{{ msi_url }}"
+        dest: "{{ msi_local }}"
+        mode: "0644"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Creer le dossier temporaire sur WIN-DC01
+      ansible.windows.win_file:
+        path: 'C:\Temp'
+        state: directory
+
+    - name: Copier le MSI sur WIN-DC01
+      ansible.windows.win_copy:
+        src: "{{ msi_local }}"
+        dest: "{{ msi_distant }}"
+
+    - name: Lire la configuration actuelle du service (lecture seule)
+      ansible.windows.win_shell: sc.exe qc windows_exporter 2>&1 | Out-String
+      register: config_service
+      changed_when: false
+      failed_when: false
+
+    # La configuration est fixee a l'installation : si elle contient le collecteur invalide 'cs', on reinstalle
+    - name: Desinstaller l'exporter installe avec le collecteur invalide 'cs'
+      ansible.windows.win_package:
+        path: "{{ msi_distant }}"
+        state: absent
+      when: "',cs,' in config_service.stdout"
+
+    - name: Installer Windows Exporter
+      ansible.windows.win_package:
+        path: "{{ msi_distant }}"
+        arguments: "ENABLED_COLLECTORS={{ collecteurs }} LISTEN_PORT={{ port_exporter }}"
+        state: present
+        creates_service: windows_exporter
+
+    - name: Autoriser le port de l'exporter depuis le reseau du lab uniquement
+      community.windows.win_firewall_rule:
+        name: "Windows Exporter (lab)"
+        localport: "{{ port_exporter }}"
+        action: allow
+        direction: in
+        protocol: tcp
+        remoteip: "{{ reseau_lab }}"
+        profiles: domain
+        enabled: true
+        state: present
+
+    - name: Demarrer le service et le rendre automatique
+      ansible.windows.win_service:
+        name: windows_exporter
+        start_mode: auto
+        state: started
+
+    - name: Verifier que les metriques de l'exporter repondent (depuis ops01)
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:{{ port_exporter }}/metrics"
+        return_content: true
+      delegate_to: localhost
+      register: metriques
+      failed_when: false
+      until: metriques.status | default(0) == 200
+      retries: 10
+      delay: 3
+
+    - name: Controle final de l'exporter Windows
+      ansible.builtin.assert:
+        that:
+          - metriques.status | default(0) == 200
+          - "'windows_cpu_logical_processor' in metriques.content | default('')"
+        fail_msg: "Windows Exporter ne repond pas correctement"
+        success_msg: "Windows Exporter repond et expose ses metriques"

@@ -1,0 +1,8 @@
+---
+# Connexion WinRM (HTTP 5985, NTLM). Le mot de passe vient du terminal, jamais de ce fichier.
+ansible_connection: winrm
+ansible_port: 5985
+ansible_winrm_scheme: http
+ansible_winrm_transport: ntlm
+ansible_user: 'INFRAREADY\Administrateur'
+ansible_password: "{{ lookup('env', 'WIN_ADMIN_PASSWORD') }}"
