@@ -148,7 +148,7 @@ Règles de lint ignorées, avec leur justification (le module `mount` vient de l
 - `no-handler` : le journal de maintenance n'est écrit que si des paquets ont changé.
 
 Résultat de la reproduction locale, avec les mêmes versions : `yamllint .` OK, `ansible-lint` OK (code 0), syntaxe des six playbooks OK.
-Ce que ça ne prouve pas : la pipeline n'a pas encore tourné sur GitHub, car le dépôt n'est pas encore poussé.
+Ce qui est vérifié : la pipeline s'est exécutée avec succès sur GitHub pour le commit a342e38 (deux exécutions réussies). Les exécutions précédentes avaient échoué, puis ont été corrigées.
 
 ## Résultats constatés
 
