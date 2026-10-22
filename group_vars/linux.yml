@@ -1,0 +1,5 @@
+---
+ansible_become: true
+ansible_python_interpreter: /usr/bin/python3
+web_package: nginx
+web_service: nginx

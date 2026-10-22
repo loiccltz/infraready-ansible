@@ -1,0 +1,11 @@
+# Clés et identifiants : jamais versionnés
+id_*
+*.pem
+*.key
+*.vault
+secrets*
+.env
+.env.*
+
+# Artefacts Ansible
+*.retry

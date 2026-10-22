@@ -1,0 +1,16 @@
+---
+- name: Installer et activer nginx
+  hosts: linux
+  become: true
+  tasks:
+    - name: Installer le paquet web
+      ansible.builtin.apt:
+        name: "{{ web_package }}"
+        state: present
+        update_cache: true
+
+    - name: Démarrer et activer le service web
+      ansible.builtin.service:
+        name: "{{ web_service }}"
+        state: started
+        enabled: true
