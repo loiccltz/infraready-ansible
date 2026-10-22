@@ -137,7 +137,7 @@ La pipeline `.github/workflows/ci.yml` s'exécute à chaque push et pull request
 - lance `ansible-lint` (`.ansible-lint`) ;
 - vérifie la syntaxe des six playbooks.
 
-Les versions sont figées : `requirements-ci.txt` (ansible-core 2.20.1, ansible-lint 26.1.1, yamllint 1.37.1) et `requirements.yml` (ansible.windows 3.3.0, community.windows 3.1.0, microsoft.ad 1.10.0).
+Les versions sont figées : `requirements-ci.txt` (ansible-core 2.20.1, ansible-lint 26.1.1, yamllint 1.38.0) et `requirements.yml` (ansible.windows 3.3.0, community.windows 3.1.0, microsoft.ad 1.10.0).
 
 Pour reproduire localement, depuis `~/infraready-ansible` : `yamllint .`, puis `ansible-lint`, puis `ansible-playbook -i inventory.ini <playbook> --syntax-check` pour chaque playbook.
 
